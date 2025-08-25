@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BouncyCastle - XML Viewer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>BouncyCastle</h1>
+    <p>A beautiful website viewer for XML files.</p>
+    <div id="app">
+        <div id="upload-container">
+            <h2>Upload XML File</h2>
+            <div id="drop-zone">
+                <p>Drag & drop your XML file here</p>
+                <p>or</p>
+                <button id="upload-btn">Select File</button>
+                <input type="file" id="file-input" accept=".xml,text/xml" style="display: none;">
+            </div>
+        </div>
+        <div id="tree-container" style="display: none;">
+            <h2>XML Tree View</h2>
+            <div id="xml-tree"></div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
