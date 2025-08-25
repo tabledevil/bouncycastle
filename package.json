@@ -1,0 +1,26 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "description": "**A beautiful website viewer for XML files with a focus on topology, schema detection, and smart viewing functions for large and convoluted XML files, especially those with the Genesis schema.**",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tabledevil/bouncycastle.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/tabledevil/bouncycastle/issues"
+  },
+  "homepage": "https://github.com/tabledevil/bouncycastle#readme",
+  "dependencies": {
+    "express": "^5.1.0",
+    "lodash": "^4.17.21"
+  }
+}

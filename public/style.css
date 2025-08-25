@@ -1,0 +1,55 @@
+body {
+    font-family: sans-serif;
+    background-color: #f0f0f0;
+    color: #333;
+}
+
+#upload-container {
+    text-align: center;
+}
+
+#drop-zone {
+    border: 2px dashed #ccc;
+    border-radius: 10px;
+    padding: 50px;
+    margin-top: 20px;
+    cursor: pointer;
+}
+
+#drop-zone.dragover {
+    background-color: #e0e0e0;
+}
+
+#upload-btn {
+    padding: 10px 20px;
+    font-size: 16px;
+    cursor: pointer;
+}
+
+#app {
+    margin: 20px;
+    padding: 20px;
+    background-color: #fff;
+    border-radius: 5px;
+}
+
+#tree-container {
+    text-align: left;
+}
+
+.tree-node {
+    margin-left: 20px;
+    border-left: 1px solid #ccc;
+    padding-left: 10px;
+}
+
+.node-content {
+    cursor: pointer;
+    font-family: monospace;
+}
+
+.text-node {
+    margin-left: 10px;
+    font-style: italic;
+    color: #555;
+}
