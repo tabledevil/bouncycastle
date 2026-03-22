@@ -16,8 +16,14 @@ Verwendung:
 """
 
 import argparse
+import hashlib
+import json
+import os
 import re
 import sys
+import time
+import urllib.request
+import zipfile
 
 import numpy as np
 
@@ -33,15 +39,174 @@ AVAILABLE_MODELS = {
 DEFAULT_MODEL = "glove-100"
 
 
-def load_model(model_key):
-    """Lade ein vortrainiertes Wortvektor-Modell über gensim."""
+def _get_gensim_data_dir():
+    """Ermittle das gensim-data Verzeichnis."""
+    base = os.environ.get("GENSIM_DATA_DIR", os.path.join(os.path.expanduser("~"), "gensim-data"))
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def _download_with_resume(url, dest_path, expected_size=None, max_retries=5):
+    """Download einer Datei mit Resume-Support und Retry bei Unterbrechung."""
+    for attempt in range(1, max_retries + 1):
+        existing_size = 0
+        if os.path.exists(dest_path):
+            existing_size = os.path.getsize(dest_path)
+
+        if expected_size and existing_size >= expected_size:
+            print(f"  Datei bereits vollständig heruntergeladen ({existing_size} bytes).")
+            return True
+
+        headers = {}
+        if existing_size > 0:
+            headers["Range"] = f"bytes={existing_size}-"
+            print(f"  Setze Download fort ab {existing_size / 1024 / 1024:.1f} MB (Versuch {attempt}/{max_retries})...")
+        else:
+            print(f"  Starte Download (Versuch {attempt}/{max_retries})...")
+
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as response:
+                # Prüfe ob Server Range unterstützt
+                if existing_size > 0 and response.status != 206:
+                    # Server unterstützt kein Resume, von vorne anfangen
+                    print("  Server unterstützt kein Resume, starte von vorne...")
+                    existing_size = 0
+                    mode = "wb"
+                else:
+                    mode = "ab" if existing_size > 0 else "wb"
+
+                total_size = None
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    total_size = int(content_length) + existing_size
+
+                downloaded = existing_size
+                chunk_size = 1024 * 1024  # 1 MB chunks
+                last_print = time.time()
+
+                with open(dest_path, mode) as f:
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+
+                        # Fortschritt alle 2 Sekunden anzeigen
+                        now = time.time()
+                        if now - last_print >= 2 or not chunk:
+                            if total_size:
+                                pct = downloaded / total_size * 100
+                                bar_done = int(pct / 2)
+                                bar = "=" * bar_done + "-" * (50 - bar_done)
+                                print(f"\r  [{bar}] {pct:.1f}% {downloaded / 1024 / 1024:.1f}/{total_size / 1024 / 1024:.1f} MB", end="", flush=True)
+                            else:
+                                print(f"\r  {downloaded / 1024 / 1024:.1f} MB heruntergeladen...", end="", flush=True)
+                            last_print = now
+
+                print()  # Neue Zeile nach Fortschrittsanzeige
+                print("  Download abgeschlossen.")
+                return True
+
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+            print(f"\n  Download unterbrochen: {e}")
+            if attempt < max_retries:
+                wait = 2 ** attempt
+                print(f"  Warte {wait}s vor erneutem Versuch...")
+                time.sleep(wait)
+            else:
+                print(f"  Alle {max_retries} Versuche fehlgeschlagen.")
+                return False
+
+    return False
+
+
+def _robust_download_model(model_name):
+    """Lade ein gensim-Modell mit robustem Download (Resume + Retry)."""
     import gensim.downloader as api
 
+    data_dir = _get_gensim_data_dir()
+    model_dir = os.path.join(data_dir, model_name)
+
+    # Prüfe ob Modell bereits geladen ist
+    if os.path.exists(os.path.join(model_dir, "__init__.py")):
+        print(f"  Modell bereits vorhanden in {model_dir}")
+        return api.load(model_name)
+
+    # Hole Modell-Info von gensim
+    info = api.info()
+    if model_name not in info["models"]:
+        print(f"Unbekanntes Modell: {model_name}")
+        print(f"Verfügbar: {', '.join(info['models'].keys())}")
+        sys.exit(1)
+
+    model_info = info["models"][model_name]
+    file_size = model_info.get("file_size", 0)
+    file_name = model_info.get("file_name", f"{model_name}.gz")
+    checksum = model_info.get("checksum", None)
+
+    # Download-URL
+    base_url = "https://raw.githubusercontent.com/RaRe-Technologies/gensim-data/master"
+    url = f"{base_url}/{model_name}/{file_name}"
+
+    os.makedirs(model_dir, exist_ok=True)
+    dest_path = os.path.join(model_dir, file_name)
+
+    print(f"  Modell: {model_name}")
+    print(f"  Größe: {file_size / 1024 / 1024:.1f} MB")
+
+    success = _download_with_resume(url, dest_path, expected_size=file_size)
+    if not success:
+        print("\nDownload fehlgeschlagen. Tipps:")
+        print("  - Prüfe deine Internetverbindung")
+        print("  - Versuche es später erneut (der Download wird fortgesetzt)")
+        print(f"  - Nutze ein kleineres Modell: --model glove-100")
+        sys.exit(1)
+
+    # Checksum prüfen
+    if checksum:
+        print("  Prüfe Checksum...")
+        sha = hashlib.sha256()
+        with open(dest_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                sha.update(chunk)
+        if sha.hexdigest() != checksum:
+            print(f"  WARNUNG: Checksum stimmt nicht überein!")
+            print(f"  Erwartet:  {checksum}")
+            print(f"  Erhalten:  {sha.hexdigest()}")
+            print(f"  Lösche fehlerhaften Download...")
+            os.remove(dest_path)
+            sys.exit(1)
+
+    # Entpacken falls nötig
+    if file_name.endswith(".zip"):
+        print("  Entpacke Archiv...")
+        with zipfile.ZipFile(dest_path, "r") as zf:
+            zf.extractall(model_dir)
+
+    # Markiere als vollständig
+    with open(os.path.join(model_dir, "__init__.py"), "w") as f:
+        f.write("")
+
+    # Lade über gensim
+    return api.load(model_name)
+
+
+def load_model(model_key):
+    """Lade ein vortrainiertes Wortvektor-Modell."""
     model_name = AVAILABLE_MODELS.get(model_key, model_key)
     print(f"\nLade Modell '{model_name}'...")
     print("(Beim ersten Mal wird das Modell heruntergeladen, das kann etwas dauern.)\n")
-    wv = api.load(model_name)
-    print(f"Modell geladen: {len(wv)} Wörter, {wv.vector_size} Dimensionen.\n")
+
+    try:
+        wv = _robust_download_model(model_name)
+    except Exception as e:
+        print(f"\nRobuster Download fehlgeschlagen ({e}), versuche Standard-gensim...")
+        import gensim.downloader as api
+        wv = api.load(model_name)
+
+    print(f"\nModell geladen: {len(wv)} Wörter, {wv.vector_size} Dimensionen.\n")
     return wv
 
 
