@@ -433,6 +433,14 @@ def show_help():
 ║    bigger - big + small         → smaller                    ║
 ║    chatgpt - openai + google    → (mit fasttext-native!)     ║
 ║                                                              ║
+║  Analogie-Ketten:                                            ║
+║    man > king = woman > ?      → queen                        ║
+║    fast > red = slow > ?       → ?                            ║
+║                                                               ║
+║  Clustering & Gegenteile:                                    ║
+║    cluster red,green,blue      Finde ähnliche Wörter          ║
+║    ! word                      Finde Gegenteile               ║
+║                                                               ║
 ║  Befehle:                                                    ║
 ║    sim wort1 wort2     Ähnlichkeit zwischen zwei Wörtern     ║
 ║    nearest wort        Nächste Nachbarn eines Wortes          ║
@@ -498,6 +506,59 @@ def handle_command(wv, line, topn):
             # Zeige erste 10 Dimensionen
             preview = ", ".join(f"{v:.3f}" for v in vec[:10])
             print(f"  Erste 10 Werte: [{preview}, ...]\n")
+        return topn
+
+    elif cmd == "cluster" and len(parts) >= 2:
+        # cluster red,green,blue  oder  cluster red green blue
+        raw = " ".join(parts[1:])
+        words = [w.strip().lower() for w in re.split(r'[,\s]+', raw) if w.strip()]
+        if len(words) < 2:
+            print("  Mindestens 2 Wörter für Clustering nötig.")
+            return topn
+
+        missing = [w for w in words if not _can_vectorize(wv, w)]
+        if missing:
+            print(f"  Nicht vektorisierbar: {', '.join(missing)}")
+            return topn
+
+        # Berechne Centroid
+        centroid = np.mean([wv[w] for w in words], axis=0)
+
+        # Finde ähnliche Wörter (mehr holen, um Input-Wörter rauszufiltern)
+        results = wv.most_similar(positive=[centroid], topn=topn + len(words) + 10)
+        results = [(w, s) for w, s in results if w.lower() not in words][:topn]
+
+        print(f"\n  Cluster um [{', '.join(words)}]:\n")
+        for i, (w, score) in enumerate(results, 1):
+            bar_len = int(score * 30) if score > 0 else 0
+            bar = "█" * bar_len + "░" * (30 - bar_len)
+            print(f"    {i}. {w:<20} {bar} {score:.4f}")
+        print()
+        return topn
+
+    elif cmd == "!" and len(parts) >= 2:
+        word = parts[1].lower()
+        if not _can_vectorize(wv, word):
+            print(f"  '{word}' nicht vektorisierbar.")
+            return topn
+
+        vec = wv[word]
+        neg_vec = -vec
+
+        # Finde Wörter nahe dem negierten Vektor
+        results = wv.most_similar(positive=[neg_vec], topn=topn + 5)
+        results = [(w, s) for w, s in results if w.lower() != word][:topn]
+
+        print(f"\n  Gegenteil von '{word}':\n")
+        for i, (w, score) in enumerate(results, 1):
+            # Zeige auch die direkte Ähnlichkeit zum Original
+            try:
+                sim_to_orig = wv.similarity(word, w)
+            except KeyError:
+                v2 = wv[w]
+                sim_to_orig = float(np.dot(vec, v2) / (np.linalg.norm(vec) * np.linalg.norm(v2)))
+            print(f"    {i}. {w:<20} (sim zum Original: {sim_to_orig:+.4f})")
+        print()
         return topn
 
     elif cmd == "topn" and len(parts) >= 2:
@@ -566,6 +627,18 @@ def main():
         result = handle_command(wv, line, topn)
         if result is not None:
             topn = result
+            continue
+
+        # Prüfe auf Analogie-Kette: "fast > red = slow > ?"
+        analogy_match = re.match(
+            r'^(\w+)\s*>\s*(\w+)\s*=\s*(\w+)\s*>\s*\?$', line, re.UNICODE
+        )
+        if analogy_match:
+            a, b, c = (analogy_match.group(i).lower() for i in (1, 2, 3))
+            # a:c wie b:? → ? = b - a + c
+            print(f"\n  Analogie: {a} verhält sich zu {c} wie {b} zu ???")
+            print(f"  Formel:   vec({b}) - vec({a}) + vec({c})")
+            compute_and_display(wv, f"{b} - {a} + {c}", topn)
             continue
 
         # Normaler Arithmetik-Ausdruck
