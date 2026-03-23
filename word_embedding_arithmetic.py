@@ -34,7 +34,12 @@ AVAILABLE_MODELS = {
     "word2vec": "word2vec-google-news-300",
     "glove-twitter-100": "glove-twitter-100",
     "fasttext": "fasttext-wiki-news-subwords-300",
+    "fasttext-native": "__fasttext_native__",  # Native .bin mit Subword-OOV-Support
 }
+
+# Facebook FastText native .bin Download-Info
+FASTTEXT_NATIVE_URL = "https://dl.fbaipublicfiles.com/fasttext/vectors-english/wiki-news-300d-1M-subword.bin.zip"
+FASTTEXT_NATIVE_DIR = "fasttext-native-wiki-news-300d"
 
 DEFAULT_MODEL = "glove-100"
 
@@ -193,9 +198,57 @@ def _robust_download_model(model_name):
     return api.load(model_name)
 
 
+def _load_fasttext_native():
+    """Lade das native Facebook FastText .bin-Modell mit Subword-Support."""
+    from gensim.models.fasttext import load_facebook_vectors
+
+    data_dir = _get_gensim_data_dir()
+    model_dir = os.path.join(data_dir, FASTTEXT_NATIVE_DIR)
+    bin_path = os.path.join(model_dir, "wiki-news-300d-1M-subword.bin")
+
+    if os.path.exists(bin_path):
+        print(f"  Modell bereits vorhanden in {model_dir}")
+    else:
+        os.makedirs(model_dir, exist_ok=True)
+        zip_path = os.path.join(model_dir, "wiki-news-300d-1M-subword.bin.zip")
+
+        print(f"  Modell: Facebook FastText wiki-news-300d (nativ, mit Subword-OOV)")
+        print(f"  Download: ~958 MB (ZIP), ~7 GB entpackt")
+        print(f"  Dieses Modell kann Vektoren für UNBEKANNTE Wörter erzeugen!\n")
+
+        success = _download_with_resume(FASTTEXT_NATIVE_URL, zip_path)
+        if not success:
+            print("\nDownload fehlgeschlagen. Tipps:")
+            print("  - Prüfe deine Internetverbindung")
+            print("  - Versuche es später erneut (der Download wird fortgesetzt)")
+            print("  - Nutze ein kleineres Modell: --model glove-100")
+            sys.exit(1)
+
+        print("  Entpacke Archiv (das kann einige Minuten dauern)...")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(model_dir)
+
+        # ZIP löschen um Platz zu sparen
+        os.remove(zip_path)
+        print("  ZIP-Archiv gelöscht um Speicherplatz zu sparen.")
+
+    print("  Lade FastText-Modell (das kann etwas dauern)...")
+    wv = load_facebook_vectors(bin_path)
+    return wv
+
+
 def load_model(model_key):
     """Lade ein vortrainiertes Wortvektor-Modell."""
     model_name = AVAILABLE_MODELS.get(model_key, model_key)
+
+    if model_name == "__fasttext_native__":
+        print(f"\nLade natives FastText-Modell mit Subword-Support...")
+        print("(Beim ersten Mal wird das Modell heruntergeladen, das kann etwas dauern.)\n")
+        wv = _load_fasttext_native()
+        print(f"\nModell geladen: {len(wv)} bekannte Wörter, {wv.vector_size} Dimensionen.")
+        print("  OOV-Support: JA — unbekannte Wörter werden aus Subwords konstruiert.\n")
+        return wv
+
     print(f"\nLade Modell '{model_name}'...")
     print("(Beim ersten Mal wird das Modell heruntergeladen, das kann etwas dauern.)\n")
 
@@ -245,6 +298,29 @@ def parse_expression(expr):
     return positive, negative
 
 
+def _has_oov_support(wv):
+    """Prüfe ob das Modell OOV-Support hat (natives FastText)."""
+    try:
+        from gensim.models.fasttext import FastTextKeyedVectors
+        return isinstance(wv, FastTextKeyedVectors)
+    except ImportError:
+        return False
+
+
+def _can_vectorize(wv, word):
+    """Prüfe ob ein Wort vektorisiert werden kann (inkl. OOV via Subwords)."""
+    if word in wv:
+        return True
+    if _has_oov_support(wv):
+        try:
+            vec = wv[word]
+            # Prüfe ob der Vektor nicht nur Nullen ist (= keine Subwords gefunden)
+            return np.any(vec != 0)
+        except (KeyError, Exception):
+            return False
+    return False
+
+
 def compute_and_display(wv, expression, topn=5):
     """Berechne Vektorarithmetik und zeige die nächsten Nachbarn."""
     positive, negative = parse_expression(expression)
@@ -253,13 +329,23 @@ def compute_and_display(wv, expression, topn=5):
         print("Leerer Ausdruck. Bitte gib Wörter mit +/- ein.")
         return
 
-    # Prüfe ob alle Wörter im Vokabular sind
+    has_oov = _has_oov_support(wv)
+
+    # Prüfe ob alle Wörter vektorisiert werden können
     all_words = positive + negative
-    missing = [w for w in all_words if w not in wv]
-    if missing:
-        print(f"Nicht im Vokabular: {', '.join(missing)}")
-        for w in missing:
-            # Vorschläge finden
+    oov_words = []
+    truly_missing = []
+    for w in all_words:
+        if w in wv:
+            continue
+        if _can_vectorize(wv, w):
+            oov_words.append(w)
+        else:
+            truly_missing.append(w)
+
+    if truly_missing:
+        print(f"Nicht vektorisierbar: {', '.join(truly_missing)}")
+        for w in truly_missing:
             try:
                 similar = wv.most_similar(positive=[w[:3]], topn=3)
                 suggestions = [s[0] for s in similar]
@@ -267,6 +353,9 @@ def compute_and_display(wv, expression, topn=5):
             except (KeyError, Exception):
                 pass
         return
+
+    if oov_words:
+        print(f"  OOV (aus Subwords konstruiert): {', '.join(oov_words)}")
 
     # Berechne manuell für die Anzeige
     result_vec = np.zeros(wv.vector_size, dtype=np.float32)
@@ -286,8 +375,21 @@ def compute_and_display(wv, expression, topn=5):
     print(f"  {'─' * 50}")
 
     # Finde nächste Nachbarn
+    # Bei OOV-Wörtern müssen wir manuell rechnen, da most_similar()
+    # nur bekannte Wörter als Strings akzeptiert
     try:
-        results = wv.most_similar(positive=positive, negative=negative, topn=topn)
+        if oov_words:
+            # Manuell: Vektor berechnen und per Vektor suchen
+            vec = np.zeros(wv.vector_size, dtype=np.float32)
+            for w in positive:
+                vec = vec + wv[w]
+            for w in negative:
+                vec = vec - wv[w]
+            results = wv.most_similar(positive=[vec], topn=topn + len(all_words))
+            # Eingabewörter herausfiltern
+            results = [(w, s) for w, s in results if w not in all_words][:topn]
+        else:
+            results = wv.most_similar(positive=positive, negative=negative, topn=topn)
     except Exception as e:
         print(f"  Fehler: {e}")
         return
@@ -303,8 +405,15 @@ def compute_and_display(wv, expression, topn=5):
         print(f"\n  Ähnlichkeiten zwischen Eingabewörtern:")
         for i, w1 in enumerate(all_words):
             for w2 in all_words[i + 1:]:
-                sim = wv.similarity(w1, w2)
-                print(f"    {w1} ↔ {w2}: {sim:.4f}")
+                try:
+                    sim = wv.similarity(w1, w2)
+                    print(f"    {w1} ↔ {w2}: {sim:.4f}")
+                except KeyError:
+                    # OOV-Wörter: manuell berechnen
+                    v1 = wv[w1]
+                    v2 = wv[w2]
+                    sim = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+                    print(f"    {w1} ↔ {w2}: {sim:.4f} (OOV)")
     print()
 
 
@@ -322,6 +431,7 @@ def show_help():
 ║    paris - france + germany     → berlin                     ║
 ║    walking - walk + swim        → swimming                   ║
 ║    bigger - big + small         → smaller                    ║
+║    chatgpt - openai + google    → (mit fasttext-native!)     ║
 ║                                                              ║
 ║  Befehle:                                                    ║
 ║    sim wort1 wort2     Ähnlichkeit zwischen zwei Wörtern     ║
@@ -342,20 +452,33 @@ def handle_command(wv, line, topn):
 
     if cmd == "sim" and len(parts) >= 3:
         w1, w2 = parts[1].lower(), parts[2].lower()
-        missing = [w for w in [w1, w2] if w not in wv]
+        missing = [w for w in [w1, w2] if not _can_vectorize(wv, w)]
         if missing:
-            print(f"  Nicht im Vokabular: {', '.join(missing)}")
+            print(f"  Nicht vektorisierbar: {', '.join(missing)}")
         else:
-            sim = wv.similarity(w1, w2)
-            print(f"\n  Ähnlichkeit({w1}, {w2}) = {sim:.4f}\n")
+            try:
+                sim = wv.similarity(w1, w2)
+            except KeyError:
+                v1, v2 = wv[w1], wv[w2]
+                sim = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+            oov_note = ""
+            oov = [w for w in [w1, w2] if w not in wv]
+            if oov:
+                oov_note = f"  (OOV aus Subwords: {', '.join(oov)})"
+            print(f"\n  Ähnlichkeit({w1}, {w2}) = {sim:.4f}{oov_note}\n")
         return topn
 
     elif cmd == "nearest" and len(parts) >= 2:
         word = parts[1].lower()
-        if word not in wv:
-            print(f"  '{word}' nicht im Vokabular.")
+        if not _can_vectorize(wv, word):
+            print(f"  '{word}' nicht vektorisierbar.")
         else:
-            results = wv.most_similar(positive=[word], topn=topn)
+            if word not in wv:
+                print(f"  ('{word}' ist OOV — Vektor aus Subwords konstruiert)")
+                vec = wv[word]
+                results = wv.most_similar(positive=[vec], topn=topn)
+            else:
+                results = wv.most_similar(positive=[word], topn=topn)
             print(f"\n  Nächste Nachbarn von '{word}':\n")
             for i, (w, score) in enumerate(results, 1):
                 print(f"    {i}. {w:<20} {score:.4f}")
@@ -364,11 +487,12 @@ def handle_command(wv, line, topn):
 
     elif cmd == "vec" and len(parts) >= 2:
         word = parts[1].lower()
-        if word not in wv:
-            print(f"  '{word}' nicht im Vokabular.")
+        if not _can_vectorize(wv, word):
+            print(f"  '{word}' nicht vektorisierbar.")
         else:
             vec = wv[word]
-            print(f"\n  Vektor für '{word}' ({len(vec)} Dimensionen):")
+            oov_tag = " (OOV — aus Subwords)" if word not in wv else ""
+            print(f"\n  Vektor für '{word}'{oov_tag} ({len(vec)} Dimensionen):")
             print(f"  Norm: {np.linalg.norm(vec):.4f}")
             print(f"  Min: {vec.min():.4f}, Max: {vec.max():.4f}, Mean: {vec.mean():.4f}")
             # Zeige erste 10 Dimensionen
