@@ -36,6 +36,75 @@ if os.path.exists(HISTORY_FILE):
     readline.read_history_file(HISTORY_FILE)
 atexit.register(readline.write_history_file, HISTORY_FILE)
 
+# Tab-Completion Befehle
+COMMANDS = ["sim", "nearest", "vec", "cluster", "topn", "hilfe", "help", "quit", "exit"]
+
+
+class EmbeddingCompleter:
+    """Tab-Completion für Befehle, Wörter aus dem Vokabular und Syntax-Elemente."""
+
+    def __init__(self, wv=None):
+        self.wv = wv
+        self._vocab_cache = None
+
+    def set_model(self, wv):
+        self.wv = wv
+        self._vocab_cache = None
+
+    def _get_vocab(self):
+        """Lazy-Cache des Vokabulars für schnelleres Matching."""
+        if self._vocab_cache is None and self.wv is not None:
+            self._vocab_cache = set(self.wv.key_to_index.keys())
+        return self._vocab_cache or set()
+
+    def complete(self, text, state):
+        """Readline-Completer: wird bei jedem Tab-Druck aufgerufen."""
+        if state == 0:
+            line = readline.get_line_buffer()
+            begin = readline.get_begidx()
+            self._matches = self._get_completions(text.lower(), line, begin)
+        if state < len(self._matches):
+            return self._matches[state]
+        return None
+
+    def _get_completions(self, text, line, begin):
+        """Ermittle passende Completions basierend auf Kontext."""
+        # Am Zeilenanfang: Befehle + Wörter
+        if begin == 0:
+            cmd_matches = [c + " " for c in COMMANDS if c.startswith(text)]
+            word_matches = self._match_words(text)
+            return cmd_matches + word_matches
+
+        # Nach "!" → Wörter für Gegenteil
+        stripped = line[:begin].strip()
+        if stripped == "!":
+            return self._match_words(text)
+
+        # Nach Befehl → Wörter
+        first_word = stripped.split()[0].lower() if stripped.split() else ""
+        if first_word in ("sim", "nearest", "vec", "cluster"):
+            return self._match_words(text)
+
+        # Mitten in Arithmetik-Ausdruck oder Analogie → Wörter
+        return self._match_words(text)
+
+    def _match_words(self, prefix, limit=30):
+        """Finde Vokabular-Wörter die mit prefix beginnen."""
+        if not prefix or self.wv is None:
+            return []
+        vocab = self._get_vocab()
+        matches = []
+        for word in vocab:
+            if word.startswith(prefix) and word != prefix:
+                matches.append(word + " ")
+                if len(matches) >= limit:
+                    break
+        matches.sort(key=lambda w: len(w))
+        return matches
+
+
+_completer = EmbeddingCompleter()
+
 AVAILABLE_MODELS = {
     "glove-100": "glove-wiki-gigaword-100",
     "glove-200": "glove-wiki-gigaword-200",
@@ -614,9 +683,16 @@ def main():
     wv = load_model(args.model)
     topn = args.topn
 
+    # Tab-Completion aktivieren
+    _completer.set_model(wv)
+    readline.set_completer(_completer.complete)
+    readline.set_completer_delims(" \t\n+-=>,")
+    readline.parse_and_bind("tab: complete")
+
     show_help()
 
-    print("Bereit! Gib einen Ausdruck ein (oder 'hilfe' für Hilfe):\n")
+    print("Bereit! Gib einen Ausdruck ein (oder 'hilfe' für Hilfe):")
+    print("  Tipp: Drücke TAB für Wort-Vervollständigung!\n")
 
     while True:
         try:
