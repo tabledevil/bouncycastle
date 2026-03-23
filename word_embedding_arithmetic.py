@@ -16,16 +16,25 @@ Verwendung:
 """
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
 import re
+import readline
 import sys
 import time
 import urllib.request
 import zipfile
 
 import numpy as np
+
+# Readline-History: Pfeiltasten-Navigation und persistente History
+HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".wort_embedding_history")
+readline.set_history_length(500)
+if os.path.exists(HISTORY_FILE):
+    readline.read_history_file(HISTORY_FILE)
+atexit.register(readline.write_history_file, HISTORY_FILE)
 
 AVAILABLE_MODELS = {
     "glove-100": "glove-wiki-gigaword-100",
